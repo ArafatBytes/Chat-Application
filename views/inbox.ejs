@@ -1,0 +1,437 @@
+<%- include('./partials/header.ejs'); %>
+    <div id="chat-container">
+      <div id="search-container">
+        <input type="text" placeholder="Search" />
+      </div>
+      <div id="conversation-list">
+        <% data.forEach(function(conversation) { %>
+          <!-- conversation creator is same to logged in user, so we need to show participant name and avatar -->
+          <% if(conversation.creator.id == loggedInUser.userid) { %>
+            <div class="conversation" onclick="getMessages('<%= conversation._id %>', '<%= conversation.participant.name %>')">
+              <% if (conversation.participant.avatar) { %>
+              <img src="./uploads/avatars/<%= conversation.participant.avatar %>" alt="<%= conversation.participant.name %>" />
+              <% } else { %>
+                <img src="./images/nophoto.png" />
+              <% } %>
+              <div class="title-text"><%= conversation.participant.name %></div>
+              <div class="conversation-date"><%= moment(conversation.last_updated).fromNow() %></div>
+            </div>
+          <% } else { %>
+            <div class="conversation" onclick="getMessages('<%= conversation._id %>', '<%= conversation.creator.name %>')">
+              <% if (conversation.creator.avatar) { %>
+              <img src="./uploads/avatars/<%= conversation.creator.avatar %>" alt="<%= conversation.creator.name %>" />
+              <% } else { %>
+                <img src="./images/nophoto.png" />
+              <% } %>
+              <div class="title-text"><%= conversation.creator.name %></div>
+              <div class="conversation-date"><%= moment(conversation.last_updated).fromNow() %></div>
+            </div>
+          <% } %>
+        <% }); %>
+        
+        <!-- show no conversation placeholder image for 0 conversations -->
+        <% if(data && data.length === 0) { %>
+          <div class="nothing"><img src="./images/no-conversation.svg"></div>
+        <% } %>
+      </div>
+
+      <div class="new-message-container" onclick="openModal()">
+        <a href="#">+</a>
+      </div>
+
+      <div id="chat-title">
+        <span id="conversation-partner"></span>
+        <img src="./images/trash.png" alt="Delete Conversation" />
+      </div>
+
+      <!-- placeholder div if no messages are in messages area -->
+      <div id="chat-message-list">
+        <div class="nothing">select a conversation</div>
+      </div>
+
+      <!-- send message form -->
+      <div id="chat-form">
+        <div id="selected-attachments"></div>
+        <div class="input-container">
+          <label for="attachment">
+            <img src="./images/attachment.png" alt="Add attachment" style="cursor: pointer;" />
+          </label>
+          <input type="file" id="attachment" name="attachment" style="display: none;" multiple accept="image/*" />
+          <input type="text" placeholder="Type a message" id="message" name="message" autocomplete="off" />
+        </div>
+      </div>
+
+    </div>
+    <%- include('./partials/add-conversation-modal.ejs'); %>
+
+    <!-- import socket io client from cdn -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/3.1.3/socket.io.min.js"></script>
+
+    <script src="/js/toastify.js"></script>
+    
+    <!-- Image Modal -->
+    <div id="imageModal">
+      <div class="modal-content">
+        <span class="modal-close" onclick="closeImageModal()">&times;</span>
+        <img id="modalImage" src="" alt="Enlarged Image" />
+      </div>
+    </div>
+
+    <script>
+
+      const form = document.querySelector('#chat-form');
+      const messageContainer = document.querySelector('#chat-message-list');
+      const chatTitleContainer = document.querySelector('#conversation-partner');
+      const loggedinUserId = '<%= loggedInUser.userid %>';
+      const loggedinUserName = '<%= loggedInUser.username %>';
+      let participant = null; // selected conversation participant object
+      let current_conversation_id; // selected conversation id
+
+      // socket initialization
+      const socket = io('<%= process.env.APP_URL %>');
+
+      // handle new/live incoming message from socket
+      socket.on("new_message", data => {
+        // only respond if current conversation is open in any client
+        if(data.message.conversation_id == current_conversation_id) {
+          // message class
+          const messageClass = data.message.sender.id === loggedinUserId ? 'you-message' : 'other-message';
+          
+          const senderAvatar = data.message.sender.avatar ? `<img src="./uploads/avatars/${data.message.sender.avatar}" alt="${data.message.sender.name}" />` : `<img src="./images/nophoto.png" alt="${data.message.sender.name}" />`;
+
+          // message attachments
+          let attachments = '<div class="attachments">';
+
+          if(data.message.attachment && data.message.attachment.length > 0) {
+            data.message.attachment.forEach(attachment => {
+              attachments += `<img src="./uploads/attachments/${attachment}" /> `;
+            });
+          }
+
+          attachments += '</div>';
+
+          let messageHTML;
+
+          // do not show avatar for loggedin user
+          if(data.message.sender.id == loggedinUserId) {
+            messageHTML = `<div class="message-row ${messageClass}"><div class="message-content">
+              ${data.message.message ? `<div class="message-text">${data.message.message}</div>` : ''}
+              ${attachments}
+              <div class="message-time">${moment(data.message.date_time).fromNow()}</div>
+            </div></div>`;
+          } else {
+            messageHTML = `<div class="message-row ${messageClass}"><div class="message-content">
+              ${senderAvatar}
+              ${data.message.message ? `<div class="message-text">${data.message.message}</div>` : ''}
+              ${attachments}
+              <div class="message-time">${moment(data.message.date_time).fromNow()}</div>
+            </div></div>`;
+          }
+
+          // append the inoming message to message area as last item
+          document.querySelector('#chat-message-list > .message-row:first-child').insertAdjacentHTML('beforeBegin', messageHTML);
+
+          // Initialize click handlers for new messages
+          initializeImageClickHandlers();
+
+          // scroll to bottom
+          messageContainer.scrollTop = messageContainer.scrollHeight;
+        }
+      });
+
+      // get messages of a conversation
+      async function getMessages(conversation_id, current_conversation_name){
+
+        // messages failure toast
+        const messagesFailureToast = Toastify({
+          text: "Error loading messages!",
+          duration: 1000,
+        });
+
+        let response = await fetch(`/inbox/messages/${conversation_id}`);
+        const result= await response.json();
+
+        if(!result.errors && result.data) {
+            form.style.visibility = 'visible';
+            
+            const {data, user, conversation_id} = result;
+
+            participant = data.participant;
+            current_conversation_id = conversation_id;
+
+            if(data.messages) {
+
+              let allMessages = '';
+
+              if(data.messages.length > 0) {
+                data.messages.forEach((message) => {
+                  let senderAvatar = message.sender.avatar ? `./uploads/avatars/${message.sender.avatar}` : './images/nophoto.png';
+                  const messageClass = message.sender.id === loggedinUserId ? 'you-message' : 'other-message';
+                  const showAvatar = message.sender.id === loggedinUserId ? '' : `<img src="${senderAvatar}" alt="${message.sender.name}" />`;
+
+                  // message attachments
+                  let attachments = '<div class="attachments">';
+
+                  if(message.attachment && message.attachment.length > 0) {
+                    message.attachment.forEach(attachment => {
+                      attachments += `<img src="./uploads/attachments/${attachment}" /> `;
+                    });
+                  }
+
+                  attachments += '</div>';
+
+                  // final message html
+                  let messageHTML = `<div class="message-row ${messageClass}"><div class="message-content">
+                      ${showAvatar}
+                      ${message.text ? `<div class="message-text">${message.text}</div>` : ''}
+                      ${attachments}
+                      <div class="message-time">${moment(message.date_time).fromNow()}</div>
+                    </div></div>`;
+
+                  allMessages += messageHTML;
+                  messageContainer.innerHTML = allMessages;
+                });
+                // Initialize click handlers after loading messages
+                initializeImageClickHandlers();
+              } else if(data.messages.length === 0) {
+                messageContainer.innerHTML = '<div class="message-row"></div>';
+              }
+
+              chatTitleContainer.textContent = current_conversation_name;
+            }
+        } else {
+          messagesFailureToast.showToast();
+        }
+    }
+
+      // Handle file selection
+      const attachmentInput = document.getElementById('attachment');
+      const selectedAttachmentsDiv = document.getElementById('selected-attachments');
+      let selectedFiles = new DataTransfer();
+
+      attachmentInput.onchange = function() {
+        // Add new files to our DataTransfer object
+        for (let file of this.files) {
+          selectedFiles.items.add(file);
+        }
+        
+        // Update the input's files
+        this.files = selectedFiles.files;
+        
+        // Clear and repopulate the preview
+        selectedAttachmentsDiv.innerHTML = '';
+        
+        // Create preview for each file
+        for (let i = 0; i < selectedFiles.files.length; i++) {
+          const file = selectedFiles.files[i];
+          const reader = new FileReader();
+          
+          reader.onload = function(e) {
+            const previewDiv = document.createElement('div');
+            previewDiv.className = 'attachment-preview';
+            
+            const img = document.createElement('img');
+            img.src = e.target.result;
+            
+            const removeBtn = document.createElement('div');
+            removeBtn.className = 'remove-attachment';
+            removeBtn.innerHTML = '×';
+            removeBtn.onclick = function() {
+              // Remove file from DataTransfer object
+              const newFiles = new DataTransfer();
+              for (let j = 0; j < selectedFiles.files.length; j++) {
+                if (j !== i) {
+                  newFiles.items.add(selectedFiles.files[j]);
+                }
+              }
+              selectedFiles = newFiles;
+              attachmentInput.files = selectedFiles.files;
+              previewDiv.remove();
+            };
+            
+            previewDiv.appendChild(img);
+            previewDiv.appendChild(removeBtn);
+            selectedAttachmentsDiv.appendChild(previewDiv);
+          };
+          
+          reader.readAsDataURL(file);
+        }
+      };
+
+      // message sending
+      const messageInput = document.querySelector("#message");
+      
+      // Handle Enter key press
+      messageInput.addEventListener("keypress", function(event) {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          if (messageInput.value.trim() !== "" || (selectedFiles && selectedFiles.files.length > 0)) {
+            form.dispatchEvent(new Event('submit'));
+          }
+        }
+      });
+
+      form.onsubmit = async function (event) {
+        event.preventDefault();
+
+        const sendMessageFailureToast = Toastify({
+          text: "Error sending message",
+          duration: 1000,
+        });
+
+        const messageText = messageInput.value.trim();
+        if (!messageText && (!selectedFiles || selectedFiles.files.length === 0)) {
+          return; // Don't send if there's no message and no attachments
+        }
+
+        // prepare the form data
+        const formData = new FormData();
+        formData.append("message", messageText);
+        formData.append("receiverId", participant.id);
+        formData.append("receiverName", participant.name);
+        formData.append("conversationId", current_conversation_id);
+        
+        // Add all selected files
+        for (let file of selectedFiles.files) {
+          formData.append("attachment", file);
+        }
+
+        try {
+          const response = await fetch("/inbox/message", {
+            method: "POST",
+            body: formData,
+          });
+
+          const result = await response.json();
+
+          if (!result.errors) {
+            messageInput.value = "";
+            document.querySelector("#attachment").value = "";
+            // Reset attachments
+            selectedFiles = new DataTransfer();
+            selectedAttachmentsDiv.innerHTML = '';
+            attachmentInput.files = selectedFiles.files;
+          } else {
+            throw new Error(result.errors.common.msg);
+          }
+        } catch (err) {
+          sendMessageFailureToast.showToast();
+          console.error("Error sending message:", err);
+        }
+      };
+      
+      // Handle delete conversation
+      const deleteButton = document.querySelector('#chat-title img');
+      
+      deleteButton.addEventListener('click', async function() {
+        if (!current_conversation_id) {
+          return;
+        }
+
+        const confirmDelete = confirm("Are you sure you want to delete this conversation? This action cannot be undone.");
+        if (!confirmDelete) {
+          return;
+        }
+
+        const deleteFailureToast = Toastify({
+          text: "Error deleting conversation",
+          duration: 1000,
+        });
+
+        const deleteSuccessToast = Toastify({
+          text: "Conversation deleted successfully",
+          duration: 1000,
+        });
+
+        try {
+          const response = await fetch(`/inbox/conversation/${current_conversation_id}`, {
+            method: 'DELETE'
+          });
+
+          const result = await response.json();
+
+          if (!result.errors) {
+            deleteSuccessToast.showToast();
+            // Clear the messages
+            messageContainer.innerHTML = '<div class="nothing">select a conversation</div>';
+            // Hide the form
+            form.style.visibility = 'hidden';
+            // Clear the title
+            chatTitleContainer.textContent = '';
+            // Reset current conversation
+            current_conversation_id = null;
+            participant = null;
+            // Reload the page to update conversation list
+            setTimeout(() => {
+              location.reload();
+            }, 1000);
+          } else {
+            throw new Error(result.errors.common.msg);
+          }
+        } catch (err) {
+          console.error("Error deleting conversation:", err);
+          deleteFailureToast.showToast();
+        }
+      });
+
+      // Handle conversation deletion from socket
+      socket.on("conversation_deleted", data => {
+        if (current_conversation_id === data.conversation_id) {
+          // Clear the messages
+          messageContainer.innerHTML = '<div class="nothing">select a conversation</div>';
+          // Hide the form
+          form.style.visibility = 'hidden';
+          // Clear the title
+          chatTitleContainer.textContent = '';
+          // Reset current conversation
+          current_conversation_id = null;
+          participant = null;
+          // Reload the page to update conversation list
+          location.reload();
+        }
+      });
+    </script>
+
+    <script>
+      // Image Modal Functions
+      function openImageModal(imageSrc) {
+        const modal = document.getElementById('imageModal');
+        const modalImg = document.getElementById('modalImage');
+        modal.style.display = "block";
+        modalImg.src = imageSrc;
+      }
+
+      function closeImageModal() {
+        const modal = document.getElementById('imageModal');
+        modal.style.display = "none";
+      }
+
+      // Close modal when clicking outside the image
+      document.getElementById('imageModal').addEventListener('click', function(e) {
+        if (e.target === this) {
+          closeImageModal();
+        }
+      });
+
+      // Add click event listeners to attachment images
+      function initializeImageClickHandlers() {
+        document.querySelectorAll('.attachments img').forEach(img => {
+          if (!img.hasClickHandler) {
+            img.onclick = function() {
+              openImageModal(this.src);
+            };
+            img.hasClickHandler = true;
+          }
+        });
+      }
+
+      // Initialize click handlers for existing images
+      document.addEventListener('DOMContentLoaded', initializeImageClickHandlers);
+
+      // Add click handlers to new messages
+      socket.on('new_message', function(data) {
+        setTimeout(initializeImageClickHandlers, 100);
+      });
+    </script>
+  </body>
+</html>
